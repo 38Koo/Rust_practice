@@ -1,6 +1,9 @@
+use axum::extract::Extension;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+use std::{collections::HashMap, env};
+use tower::util::Optional;
 
 use axum::{
     http::StatusCode,
@@ -8,6 +11,86 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+enum RepositoryError {
+    #[error("Not Found, id is {0}")]
+    NotFound(i32),
+}
+
+pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'static {
+    fn create(&self, payload: CreateTodo) -> Todo;
+    fn find(&self, id: i32) -> Option<Todo>;
+    fn all(&self) -> Vec<Todo>;
+    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo>;
+    fn delete(&self, id: i32) -> anyhow::Result<()>;
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct Todo {
+    id: i32,
+    text: String,
+    completed: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct CreateTodo {
+    text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct UpdateTodo {
+    text: Option<String>,
+    completed: Option<bool>,
+}
+
+impl Todo {
+    pub fn new(id: i32, text: String) -> Self {
+        Self {
+            id,
+            text,
+            completed: false,
+        }
+    }
+}
+
+type TodoData = HashMap<i32, Todo>;
+
+#[derive(Clone, Debug)]
+pub struct TodoRepositoryForMemory {
+    store: Arc<RwLock<TodoData>>,
+}
+
+impl TodoRepositoryForMemory {
+    pub fn new() -> Self {
+        TodoRepositoryForMemory {
+            store: Arc::default(),
+        }
+    }
+}
+
+impl TodoRepository for TodoRepositoryForMemory {
+    fn create(&self, payload: CreateTodo) -> Todo {
+        todo!();
+    }
+
+    fn find(&self, id: i32) -> Option<Todo> {
+        todo!();
+    }
+
+    fn all(&self) -> Vec<Todo> {
+        todo!();
+    }
+
+    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo> {
+        todo!();
+    }
+
+    fn delete(&self, id: i32) -> anyhow::Result<()> {
+        todo!();
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -16,8 +99,8 @@ async fn main() {
     env::set_var("RUST_LOG", log_level);
     tracing_subscriber::fmt::init();
 
-
-    let app = create_app();
+    let repository = TodoRepositoryForMemory::new();
+    let app = create_app(repository);
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::debug!("Listening on {}", addr);
 
@@ -27,34 +110,24 @@ async fn main() {
         .unwrap();
 }
 
-fn create_app() -> Router {
-  Router::new()
-    .route("/", get(root))
-    .route("/users", post(create_user))
+fn create_app<T: TodoRepository>(repository: T) -> Router {
+    Router::new()
+        .route("/", get(root))
+        .route("/todos", post(create_todo::<T>))
+        .layer(Extension(Arc::new(repository)))
 }
 
 async fn root() -> &'static str {
     "Hello, world!"
 }
 
-async fn create_user(Json(payload): Json<CreateUser>) -> impl IntoResponse {
-    let user = User {
-        id: 100,
-        username: payload.username,
-    };
+pub async fn create_todo<T: TodoRepository>(
+    Json(payload): Json<CreateTodo>,
+    Extension(repository): Extension<Arc<T>>,
+) -> impl IntoResponse {
+    let todo = repository.create(payload);
 
-    (StatusCode::CREATED, Json(user))
-}
-
-#[derive(Deserialize, Debug, PartialEq, Eq)]
-struct CreateUser {
-    username: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-struct User {
-    id: u64,
-    username: String,
+    (StatusCode::CREATED, Json(todo))
 }
 
 #[cfg(test)]
@@ -68,32 +141,12 @@ mod test {
 
     #[tokio::test]
     async fn should_return_hello_world() {
-      let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-      let res = create_app().oneshot(req).await.unwrap();
-      let bytes = hyper::body::to_bytes(res.into_body()).await.unwrap();
-      let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let repository = TodoRepositoryForMemory::new();
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let res = create_app(repository).oneshot(req).await.unwrap();
+        let bytes = hyper::body::to_bytes(res.into_body()).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-      assert_eq!(body, "Hello, world!");
-    }
-
-    #[tokio::test]
-    async fn should_return_user_data() {
-      let req = Request::builder()
-        .uri("/users")
-        .method(Method::POST)
-        .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
-        .body(Body::from(r#"{ "username": "テスト 太郎" }"#))
-        .unwrap();
-      let res = create_app().oneshot(req).await.unwrap();
-      let bytes = hyper::body::to_bytes(res.into_body()).await.unwrap();
-      let body = String::from_utf8(bytes.to_vec()).unwrap();
-      let user: User = serde_json::from_str(&body).expect("cannot convert User instance.");
-
-      assert_eq!(user,
-        User {
-          id: 100,
-          username: "テスト 太郎".to_string(),
-        }
-      );
+        assert_eq!(body, "Hello, world!");
     }
 }
